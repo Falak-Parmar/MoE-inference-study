@@ -1,0 +1,18 @@
+# Local model files
+models/olmoe-1b-7b-0924-instruct/*
+!models/olmoe-1b-7b-0924-instruct/README.md
+
+# Devin
+.devin/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
