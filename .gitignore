@@ -1,5 +1,6 @@
 # Local model files
-models/olmoe-1b-7b-0924-instruct-mlx/*
+models/olmoe-1b-7b-0125-instruct/*
+!models/olmoe-1b-7b-0125-instruct/README.md
 models/olmoe-1b-7b-0924-instruct/*
 !models/olmoe-1b-7b-0924-instruct/README.md
 
