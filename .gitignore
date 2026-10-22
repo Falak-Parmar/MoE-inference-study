@@ -16,6 +16,9 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 
+# Generated experiment artifacts
+experiments/axis-2-eviction-policies/traces/
+
 # macOS
 .DS_Store
 
