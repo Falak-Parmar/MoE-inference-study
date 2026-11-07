@@ -1,0 +1,28 @@
+{
+ "PROMPTS": {
+  "math": [
+   "What is 15% of 240, and how did you get it?",
+   "How many seconds are there in a week? Show the steps.",
+   "If a car uses 6 litres per 100 km, how much for 350 km?",
+   "What is the next number: 2, 6, 12, 20, 30, ...? Explain."
+  ],
+  "code": [
+   "Write a Python function that reverses the words in a sentence.",
+   "Write a Python function that counts vowels in a string.",
+   "Write a Python one-liner that flattens a list of lists.",
+   "Write a Python function that checks if a number is prime."
+  ],
+  "chat": [
+   "What is a good way to start learning to play the guitar?",
+   "Why do leaves change colour in the autumn?",
+   "What should I pack for a weekend hiking trip?",
+   "How can I make my mornings less rushed before work?"
+  ],
+  "writing": [
+   "Write a two-line poem about rain on a tin roof.",
+   "Write a one-paragraph story about a lost umbrella.",
+   "Describe the smell of fresh bread in two sentences.",
+   "Write a short thank-you note to a helpful neighbour."
+  ]
+ }
+}

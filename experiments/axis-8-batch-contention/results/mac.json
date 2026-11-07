@@ -1,0 +1,180 @@
+{
+ "schema": 1,
+ "axis": "axis-8-batch-contention",
+ "device": "mac",
+ "created": "2026-11-07T17:39:00",
+ "git_commit": "918204b",
+ "system": {
+  "chip": "Apple M4",
+  "ram_GB": 17.2,
+  "macOS": "27.2",
+  "python": "3.14.8",
+  "mlx": "0.32.2"
+ },
+ "config": {
+  "BATCH_SIZES": [
+   1,
+   2,
+   4,
+   8,
+   16
+  ],
+  "K_VALUES": [
+   256,
+   512
+  ],
+  "MAX_NEW_TOKENS": 32,
+  "CHECK_EXACTNESS": true,
+  "SMOKE": false,
+  "SAFE_K": 493
+ },
+ "prompts": {
+  "PROMPTS": {
+   "math": [
+    "What is 15% of 240, and how did you get it?",
+    "How many seconds are there in a week? Show the steps.",
+    "If a car uses 6 litres per 100 km, how much for 350 km?",
+    "What is the next number: 2, 6, 12, 20, 30, ...? Explain."
+   ],
+   "code": [
+    "Write a Python function that reverses the words in a sentence.",
+    "Write a Python function that counts vowels in a string.",
+    "Write a Python one-liner that flattens a list of lists.",
+    "Write a Python function that checks if a number is prime."
+   ],
+   "chat": [
+    "What is a good way to start learning to play the guitar?",
+    "Why do leaves change colour in the autumn?",
+    "What should I pack for a weekend hiking trip?",
+    "How can I make my mornings less rushed before work?"
+   ],
+   "writing": [
+    "Write a two-line poem about rain on a tin roof.",
+    "Write a one-paragraph story about a lost umbrella.",
+    "Describe the smell of fresh bread in two sentences.",
+    "Write a short thank-you note to a helpful neighbour."
+   ]
+  }
+ },
+ "notes": "Converted from the CSV/JSON files of the 2026-11-07 full run (outputs committed in 918204b). axis-4 calls_by_m and axis-7 prediction are aggregates of the per-call tables of that run.",
+ "tables": {
+  "runs": {
+   "columns": [
+    "K",
+    "B",
+    "ttft_s",
+    "decode_s",
+    "agg_tok_s",
+    "per_req_tok_s",
+    "step_p50_ms",
+    "step_p95_ms",
+    "step_cv",
+    "union_per_layer",
+    "step_footprint",
+    "decode_hit_rate",
+    "reloads_per_step",
+    "loads_per_step",
+    "io_share",
+    "peak_GB",
+    "token_match"
+   ],
+   "data": [
+    [
+     256,
+     1,
+     3.607857708,
+     8.017093833,
+     3.8667378287,
+     3.8667378287,
+     244.2931249971,
+     398.080562496,
+     0.2818251684,
+     8.0,
+     128.0,
+     0.5090725806,
+     60.1612903226,
+     62.8387096774,
+     0.811724656,
+     4.215141021,
+     1.0
+    ],
+    [
+     256,
+     2,
+     3.960206417,
+     13.824601,
+     4.4847587283,
+     2.2423793641,
+     442.6387080021,
+     616.0310209962,
+     0.2206306222,
+     14.2419354839,
+     227.8709677419,
+     0.5059456399,
+     111.1935483871,
+     112.5806451613,
+     0.8432697931,
+     4.255618274,
+     1.0
+    ],
+    [
+     256,
+     4,
+     4.479980667,
+     50.185925417,
+     2.470812264,
+     0.617703066,
+     1546.5263749938,
+     2224.7905829936,
+     0.1474680364,
+     26.0080645161,
+     416.1290322581,
+     0.0,
+     415.2258064516,
+     416.1290322581,
+     0.886460303,
+     4.335955308,
+     1.0
+    ],
+    [
+     256,
+     8,
+     4.73459275,
+     80.033334125,
+     3.0987088407,
+     0.3873386051,
+     2481.5770410059,
+     3655.6782920015,
+     0.204816542,
+     38.4213709677,
+     614.7419354839,
+     0.0,
+     614.1612903226,
+     614.7419354839,
+     0.8931777494,
+     4.495871572,
+     1.0
+    ],
+    [
+     256,
+     16,
+     5.224689875,
+     124.451486917,
+     3.9854887417,
+     0.2490930464,
+     4147.7290420007,
+     4892.703437501,
+     0.138410983,
+     49.1028225806,
+     785.6451612903,
+     0.0,
+     785.2903225806,
+     785.6451612903,
+     0.9171418344,
+     4.844880692,
+     0.951171875
+    ]
+   ]
+  }
+ }
+}

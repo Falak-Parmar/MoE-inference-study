@@ -1,0 +1,28 @@
+{
+ "PROMPTS": {
+  "math": [
+   "A train leaves at 9:40 and arrives at 13:15. If it travels 287 km, what is its average speed? Show your steps.",
+   "A shop sells pens at 3 for $2. How much do 45 pens cost, and how many pens can you buy with $30?",
+   "The sum of three consecutive even numbers is 138. Find the numbers and explain your reasoning.",
+   "A rectangle has a perimeter of 54 cm and its length is twice its width. What is its area?"
+  ],
+  "code": [
+   "Write a Python function that returns the k most frequent words in a text, ignoring case and punctuation.",
+   "Implement an LRU cache class in Python with get and put methods that run in O(1) time.",
+   "Write a SQL query that finds the second highest salary in each department of an employees table.",
+   "Explain what this does and fix the bug: def avg(xs): return sum(xs) / len(xs) if xs else sum(xs) / 0"
+  ],
+  "chat": [
+   "What are some good ways to stay focused while studying for long hours?",
+   "Can you explain the difference between weather and climate in simple terms?",
+   "I am visiting Japan for a week in spring. What should I plan for?",
+   "How does compound interest work, and why do people say to start saving early?"
+  ],
+  "writing": [
+   "Write a short story about a lighthouse keeper who receives a letter from the future.",
+   "Write a persuasive paragraph arguing that cities should plant more trees.",
+   "Describe a busy night market using all five senses.",
+   "Write a polite email to a professor asking for an extension on an assignment."
+  ]
+ }
+}

@@ -17,7 +17,7 @@
 ### Running
 
 Run All (full configuration: ~1.5-2 h on an M4 / 16 GB). `MOE_SMOKE=1` runs a tiny configuration in a few minutes.
-Results go to `results/` in this folder.
+Results: `results/mac.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python experiments/figures.py`.
 
 ### Earlier results (previous notebook, superseded)
 

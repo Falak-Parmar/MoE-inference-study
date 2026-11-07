@@ -1,0 +1,20 @@
+{
+ "PROMPTS": {
+  "math": [
+   "A tank holds 1,200 litres and drains at 35 litres per minute. How long until it is empty? Show your steps.",
+   "What is the sum of all whole numbers from 1 to 200? Explain the trick."
+  ],
+  "code": [
+   "Write a Python function that groups a list of words into anagram sets.",
+   "Write a Python function that validates a Sudoku board."
+  ],
+  "chat": [
+   "What are the pros and cons of working from home?",
+   "How do vaccines train the immune system?"
+  ],
+  "writing": [
+   "Write a short scene where two old friends meet at a train station after twenty years.",
+   "Write a product description for a reusable water bottle."
+  ]
+ }
+}

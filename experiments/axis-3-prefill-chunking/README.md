@@ -16,4 +16,8 @@
 ### Running
 
 Run All (full configuration: ~40-60 min on an M4 / 16 GB). `MOE_SMOKE=1` runs a tiny configuration in a few minutes.
-Results go to `results/` in this folder.
+Results: `results/mac.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python experiments/figures.py`.
+
+**Same prompts on Windows.** Build each prompt exactly as `Mac.ipynb` does. Take the first
+`PROMPT_TOKENS` (512) tokens of a passage in `prompts.json` and decode them back to text. Put
+`Summarize the following passage in three sentences.\n\n` in front, then apply the chat template.
