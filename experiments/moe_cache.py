@@ -564,13 +564,15 @@ class ExpertCache:
         return key in self.slot_of
 
     # -- decision + load -----------------------------------------------------
-    def plan(self, keys, scores=None):
+    def plan(self, keys, scores=None, protect=()):
         """Run the policy for one group of distinct keys (all pinned together).
         Returns (slots, misses) where misses is a list of (key, slot) to load.
-        Evicted slots are freed immediately; the caller must load before compute."""
+        Evicted slots are freed immediately; the caller must load before compute.
+        ``protect``: extra resident keys that must not be evicted (e.g. slots a
+        background prefetch is still writing)."""
         if len(keys) > self.capacity:
             raise ValueError("group larger than capacity; split it first")
-        pinned = set(keys)
+        pinned = set(keys) | set(protect)
         slots, misses = [], []
         for i, key in enumerate(keys):
             sc = 1.0 if scores is None else float(scores[i])
@@ -633,9 +635,9 @@ class ExpertCache:
             list(self._pool.map(lambda ks: self._load_one(*ks), todo))
         return (time.perf_counter() - t0) * 1000
 
-    def ensure(self, keys, scores=None, sync=None):
+    def ensure(self, keys, scores=None, sync=None, protect=()):
         """Make ``keys`` resident; returns their slots."""
-        slots, misses = self.plan(keys, scores)
+        slots, misses = self.plan(keys, scores, protect)
         self.load(misses, sync)
         return slots
 
