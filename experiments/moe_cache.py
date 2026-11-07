@@ -491,10 +491,12 @@ def make_policy(name: str, capacity: int, **kw) -> _Policy:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def max_safe_capacity(index: ExpertIndex, fraction: float = 0.70, reserve_gb: float = 1.5) -> int:
-    """Largest K whose bank fits in ``fraction`` of physical RAM minus a reserve
-    for non-expert weights, KV cache and activations."""
+    """Largest K whose bank fits without swapping: the smaller of ``fraction`` of
+    physical RAM and the RAM available right now (other apps count), minus a
+    reserve for non-expert weights, KV cache and activations."""
     import psutil
-    budget = psutil.virtual_memory().total * fraction - reserve_gb * 1e9
+    vm = psutil.virtual_memory()
+    budget = min(vm.total * fraction, vm.available) - reserve_gb * 1e9
     return int(max(0, min(index.total_experts, budget // index.expert_bytes)))
 
 
@@ -1147,7 +1149,7 @@ def reference_layer_output(index: ExpertIndex, blk: CachedMoE, x, reader: Expert
     """The same MoE layer computed the stock mlx-lm way: all 64 experts of the
     layer stacked into one resident tensor (only ONE layer, ~0.8 GB, for checking)."""
     from mlx_lm.models.switch_layers import SwitchGLU
-    reader = reader or ExpertReader(index, direct=False)
+    reader = reader or ExpertReader(index, direct=True)     # do not leave experts in the page cache
     E = index.num_experts
     sw = SwitchGLU(index.hidden, index.intermediate, E)
     ws = [reader.read_arrays(blk.layer, e) for e in range(E)]
