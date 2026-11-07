@@ -1074,67 +1074,28 @@ def load_json(path: Path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Workload: one seeded prompt pool from public datasets
+# Workloads: every notebook defines its own prompts (per-axis custom workloads)
 # ─────────────────────────────────────────────────────────────────────────────
 
-SOURCES = {
-    # domain: (dataset, config, split, how to make the prompt)
-    "math": ("openai/gsm8k", "main", "test"),
-    "code": ("openai/openai_humaneval", None, "test"),
-    "chat": ("databricks/databricks-dolly-15k", None, "train"),
-    "summarization": ("abisee/cnn_dailymail", "3.0.0", "test"),
-}
-_CHAT_CATEGORIES = {"open_qa", "general_qa", "brainstorming", "creative_writing"}
-
-
-def build_prompt_pool(n_per_domain: int = 64, seed: int = 0, max_article_chars: int = 6000,
-                      refresh: bool = False) -> list[dict]:
-    """Deterministic pool of prompts: {id, domain, source, text}. Cached under
-    experiments/.cache. Same seed -> same prompts on any machine."""
-    fp = cache_dir() / f"prompt_pool_n{n_per_domain}_s{seed}.json"
-    if fp.exists() and not refresh:
-        return load_json(fp)
-
-    from datasets import load_dataset
-    rng = np.random.default_rng(seed)
-    pool = []
-
-    ds = load_dataset(*SOURCES["math"][:2], split=SOURCES["math"][2])
-    for i in rng.choice(len(ds), n_per_domain, replace=False):
-        pool.append({"domain": "math", "source": "gsm8k", "text": ds[int(i)]["question"]})
-
-    ds = load_dataset(SOURCES["code"][0], split=SOURCES["code"][2])
-    for i in rng.choice(len(ds), min(n_per_domain, len(ds)), replace=False):
-        pool.append({"domain": "code", "source": "humaneval",
-                     "text": "Complete this Python function.\n\n" + ds[int(i)]["prompt"]})
-
-    ds = load_dataset(SOURCES["chat"][0], split=SOURCES["chat"][2])
-    ok = [i for i, c in enumerate(ds["category"]) if c in _CHAT_CATEGORIES]
-    for i in rng.choice(ok, n_per_domain, replace=False):
-        pool.append({"domain": "chat", "source": "dolly", "text": ds[int(i)]["instruction"]})
-
-    # CNN/DailyMail test is large: stream the first 4x needed and sample from them.
-    stream = load_dataset(*SOURCES["summarization"][:2], split=SOURCES["summarization"][2], streaming=True)
-    arts = []
-    for ex in stream:
-        arts.append(ex["article"])
-        if len(arts) >= 4 * n_per_domain:
-            break
-    for i in rng.choice(len(arts), n_per_domain, replace=False):
-        art = arts[int(i)][:max_article_chars]
-        pool.append({"domain": "summarization", "source": "cnn_dailymail",
-                     "text": "Summarize the following article in three sentences.\n\n" + art,
-                     "article": art})
-
-    for j, p in enumerate(pool):
-        p["id"] = j
-    save_json(fp, pool)
-    return pool
-
-
-def take(pool, domain: str, n: int, offset: int = 0) -> list[dict]:
-    items = [p for p in pool if p["domain"] == domain]
-    return items[offset:offset + n]
+def requests(prompts_by_domain: dict, n_per_domain: int | None = None, order: str = "interleave",
+             offset: int = 0) -> list[dict]:
+    """Turn {domain: [prompt, ...]} into a request list of {id, domain, text}.
+    ``order='interleave'`` mixes domains round-robin (server-like traffic);
+    ``order='blocks'`` serves each domain's requests back to back (domain shifts)."""
+    lists = {d: ps[offset:offset + n_per_domain] if n_per_domain else ps[offset:]
+             for d, ps in prompts_by_domain.items()}
+    out = []
+    if order == "blocks":
+        for d, ps in lists.items():
+            out += [{"domain": d, "text": t} for t in ps]
+    else:
+        for i in range(max(len(ps) for ps in lists.values())):
+            for d, ps in lists.items():
+                if i < len(ps):
+                    out.append({"domain": d, "text": ps[i]})
+    for i, r in enumerate(out):
+        r["id"] = i
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────

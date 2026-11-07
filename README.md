@@ -13,7 +13,6 @@ We target three execution environments:
 
 ## Project Structure
 
-- `experiments/` - Experimental axes and their implementations
+- `experiments/` - One folder per research axis (`Mac.ipynb` + `README.md`); see `experiments/README.md`
+- `experiments/moe_cache.py` - Shared disk-backed expert cache used by every Mac notebook
 - `models/` - Model-specific information and documentation
-- `src/` - Source code and utilities (upcoming)
-- `inputs/` - Input prompts (upcoming)

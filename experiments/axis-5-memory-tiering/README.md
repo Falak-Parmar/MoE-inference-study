@@ -1,0 +1,19 @@
+## Axis 5: Memory Hierarchy & Expert Placement
+
+**Research Question:** How does expert placement across GPU VRAM, system RAM, and storage affect inference latency and throughput?
+**Hypothesis:** A multi-tier hierarchical cache outperforms single-tier caching by keeping frequently reused experts in the fastest tier, staging warm experts in an intermediate tier, and falling back to disk storage only for cold tails.
+
+## Notebook
+
+`Mac.ipynb`: Mac / MLX, built on the shared `experiments/moe_cache.py` (true K-slot disk-backed cache, see `experiments/README.md`).
+
+### Method
+
+* **Mac has two tiers: unified memory and disk** (Windows has three: VRAM, RAM, disk).
+* At equal unified-memory budgets B = 192, 384, 576 experts, compare **static** (hottest experts from a profiling run pinned + 64 staging slots), **hybrid** (half pinned, half LRU) and **dynamic** (all LRU).
+* Profiling and evaluation prompts are disjoint. Real timed runs plus an exact-replay budget curve.
+
+### Running
+
+Run All (full configuration: ~45-60 min on an M4 / 16 GB). `MOE_SMOKE=1` runs a tiny configuration in a few minutes.
+Results go to `results/` in this folder.
