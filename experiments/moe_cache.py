@@ -588,8 +588,17 @@ class ExpertCache:
         return slots
 
     def close(self):
+        """Release the bank memory now (the model may still hold a reference to
+        this object, so do not rely on garbage collection)."""
         if self._pool is not None:
             self._pool.shutdown()
+            self._pool = None
+        self._nG = self._nU = self._nD = None
+        self.G = self.U = self.D = None
+        self.slot_of.clear()
+        self.free = []
+        gc.collect()
+        mx.clear_cache()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -759,6 +768,13 @@ def attach_cache(model, cache: ExpertCache, observers=()):
         object.__setattr__(blk, "cache", cache)
         object.__setattr__(blk, "observers", list(observers))
         object.__setattr__(blk, "route_wait_ms", 0.0)
+
+
+def detach_cache(model):
+    """Drop the model's references to the current cache and observers."""
+    for blk in moe_blocks(model):
+        object.__setattr__(blk, "cache", None)
+        object.__setattr__(blk, "observers", [])
 
 
 def route_wait_ms(model) -> float:
@@ -1113,6 +1129,6 @@ def check_layer_exactness(model, index: ExpertIndex, capacity: int = 64, n_token
     finally:
         object.__setattr__(blk, "cache", old)
     diff = float(mx.abs(got.astype(mx.float32) - ref.astype(mx.float32)).max().item())
-    del cache
+    cache.close()
     free_memory()
     return diff
