@@ -439,6 +439,40 @@ class RouterScorePolicy(_HeapPolicy):
         self._push(key)
 
 
+class TieredPolicy(_Policy):
+    """A static tier of permanently resident ("pinned") experts plus a dynamic
+    tier managed by an inner policy. Pinned keys always hit and are never
+    evicted; they must be loaded with ``ExpertCache.preload`` before the run."""
+
+    def __init__(self, capacity, pinned_keys, inner: str = "LRU", **inner_kw):
+        super().__init__(capacity)
+        self.pinned = set(pinned_keys)
+        dyn = self.capacity - len(self.pinned)
+        if dyn < 1:
+            raise ValueError("no room left for the dynamic tier")
+        self.inner = make_policy(inner, dyn, **inner_kw)
+        self.name = f"tiered({len(self.pinned)} pinned + {inner} {dyn})"
+
+    def __len__(self):
+        return len(self.pinned) + len(self.inner)
+
+    def __contains__(self, key):
+        return key in self.pinned or key in self.inner
+
+    def access(self, key, score: float = 1.0, pinned=()):
+        if key in self.pinned:
+            self.hits += 1
+            return True, None
+        hit, ev = self.inner.access(key, score, pinned)
+        if hit:
+            self.hits += 1
+        else:
+            self.misses += 1
+            if ev is not None:
+                self.evictions += 1
+        return hit, ev
+
+
 POLICIES = {
     "FIFO": lambda c, **kw: FIFOPolicy(c),
     "LRU": lambda c, **kw: LRUPolicy(c),
@@ -580,6 +614,24 @@ class ExpertCache:
             self.load_ms.append(ms)
         self.io_ms += wall
         return wall
+
+    def preload(self, keys) -> float:
+        """Load ``keys`` into free slots without going through the policy (used
+        for a static tier). Returns the wall time in ms; not counted as misses."""
+        todo = []
+        for key in keys:
+            if key in self.slot_of:
+                continue
+            slot = self.free.pop()
+            self.slot_of[key] = slot
+            todo.append((key, slot))
+        t0 = time.perf_counter()
+        if self._pool is None:
+            for k, s in todo:
+                self._load_one(k, s)
+        else:
+            list(self._pool.map(lambda ks: self._load_one(*ks), todo))
+        return (time.perf_counter() - t0) * 1000
 
     def ensure(self, keys, scores=None, sync=None):
         """Make ``keys`` resident; returns their slots."""
