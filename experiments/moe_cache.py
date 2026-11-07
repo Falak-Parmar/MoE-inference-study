@@ -846,6 +846,42 @@ def generate(model, tokenizer, prompt_tokens, max_new_tokens: int = 32,
     return GenResult(out, tokenizer.decode(out), len(toks), ttft, decode, step_ms)
 
 
+def generate_batch(model, tokenizer, prompts_tokens, max_new_tokens: int = 32, on_step=None) -> dict:
+    """Greedy decoding of B prompts *together* (one forward pass per step for the
+    whole batch). Prompts are left-padded; mlx-lm's BatchKVCache masks the pads.
+    Every step is synchronised. Returns tokens per request and timings."""
+    from mlx_lm.models.cache import BatchKVCache
+    B = len(prompts_tokens)
+    lens = [len(t) for t in prompts_tokens]
+    L = max(lens)
+    pad = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    left = [L - n for n in lens]
+    x = mx.array([[pad] * lp + list(t) for lp, t in zip(left, prompts_tokens)])
+    cache = [BatchKVCache(left) for _ in model.layers]
+
+    t0 = time.perf_counter()
+    if on_step:
+        on_step("prefill", 0)
+    logits = model(x, cache=cache)
+    tok = mx.argmax(logits[:, -1, :], axis=-1)
+    out = [[t] for t in tok.tolist()]
+    ttft = time.perf_counter() - t0
+
+    step_ms = []
+    t1 = time.perf_counter()
+    for i in range(max_new_tokens - 1):
+        if on_step:
+            on_step("decode", i)
+        ts = time.perf_counter()
+        logits = model(tok[:, None], cache=cache)
+        tok = mx.argmax(logits[:, -1, :], axis=-1)
+        for seq, t in zip(out, tok.tolist()):        # .tolist() synchronises
+            seq.append(t)
+        step_ms.append((time.perf_counter() - ts) * 1000)
+    return {"tokens": out, "texts": [tokenizer.decode(o) for o in out], "ttft_s": ttft,
+            "decode_s": time.perf_counter() - t1, "step_ms": step_ms, "left_pad": left}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Trace recording + exact replay
 # ─────────────────────────────────────────────────────────────────────────────
