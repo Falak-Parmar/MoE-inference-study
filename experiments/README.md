@@ -28,18 +28,40 @@ axis-N-name/
 
 ## Shared code
 
-| File | Used by | Needs |
+All shared code is the `moe` package in `src/moe/`. Install it once per machine from the repository
+root: `pip install -e ".[mac]"` on the Mac, `pip install -e ".[windows]"` on Windows. The notebooks
+also add `src/` to `sys.path` themselves, so they run without installing.
+
+| Module | Used by | Needs |
 |---|---|---|
-| `moe_cache.py` | Mac notebooks | MLX (Mac only) |
-| `results.py` | every notebook, all devices | pandas |
-| `figures.py` | every notebook, and run once for the report | pandas, matplotlib |
+| `moe.common` | every device | numpy |
+| `moe.mlx_cache` | Mac notebooks | MLX (Mac only) |
+| `moe.torch_cache` | Windows notebooks (to be added on the Windows branches) | PyTorch |
+| `moe.results` | every notebook, all devices | pandas |
+| `moe.figures` | every notebook, and run once for the report | pandas, matplotlib |
 
-`moe_cache.py` is the Mac implementation. The Windows notebooks keep their PyTorch code to themselves,
-or in a `moe_cache_torch.py` next to it, and share only `results.py`, `figures.py` and `prompts.json`.
+`moe.common` has everything that does not depend on a framework:
+* the safetensors byte-range index
+* the eviction policies (FIFO, LRU, LFU, RSA, tiered)
+* exact `replay`
+* the call `Recorder`
+* the workload helpers
+* the working-set, knee and Gini analysis
 
-### `moe_cache.py` (Mac)
+Every device uses these same objects, so policies and replay cannot drift apart between
+devices. `moe.mlx_cache` re-exports all of `moe.common`, so in a Mac notebook `mc.make_policy`,
+`mc.replay` and the rest work as before.
 
-Every Mac notebook imports this one module. It keeps storage, residency, routing and compute separate:
+Imports in a notebook:
+
+```python
+from moe import mlx_cache as mc, results as rs, figures as fg     # Mac
+from moe import torch_cache as tc, results as rs, figures as fg   # Windows
+```
+
+### `moe.mlx_cache` (Mac)
+
+Every Mac notebook builds on this module. It keeps storage, residency, routing and compute separate:
 
 * **Storage** — `ExpertIndex` reads only the safetensors headers and records the byte range of every
   expert projection. `ExpertReader` reads an expert with `pread` and `F_NOCACHE`, so reads do not
@@ -169,18 +191,20 @@ not save them. Once all devices have committed their results, run this from the 
 writes `experiments/<axis>/figures/<name>.png`:
 
 ```bash
-python experiments/figures.py
+python -m moe.figures
 ```
 
 To draw only some axes:
 
 ```bash
-python experiments/figures.py axis-1-cache-capacity axis-8-batch-contention
+python -m moe.figures axis-1-cache-capacity axis-8-batch-contention
 ```
 
+(Without `pip install -e .`, prefix the command with `PYTHONPATH=src`.)
+
 Re-run it whenever a results file changes, and commit the PNGs with the results that made them.
-A new figure is one function in `figures.py` reading tables from `rs.table(...)`. Add its columns to
-`results.REQUIRED` and to the tables above.
+A new figure is one function in `src/moe/figures.py` reading tables from `rs.table(...)`. Add its columns to
+`moe.results.REQUIRED` and to the tables above.
 
 **Reading them across devices.** The Mac runs MLX with F16 experts; Windows runs PyTorch with BF16.
 They are different implementations, so compare the **shape of each device's curve** (where the

@@ -2,11 +2,11 @@
 
 Each notebook run writes ONE file: ``experiments/<axis>/results/<device>.json``.
 It holds every table the run produced plus the run's config, prompts and machine,
-so each device commits only its own file (no merge conflicts) and ``figures.py``
+so each device commits only its own file (no merge conflicts) and ``moe.figures``
 can put all devices on the same graph.
 
-This module needs only the standard library and pandas: the Windows (PyTorch)
-notebooks import it too. The required tables and columns per axis are in
+This module needs only the standard library and pandas, so the Windows (PyTorch)
+notebooks import it too (``from moe import results``). The required tables and columns per axis are in
 ``REQUIRED`` below and in ``experiments/README.md``.
 
 File layout::
@@ -34,7 +34,7 @@ DEVICES = {
     "windows-dgpu": "Windows dGPU (PyTorch)",
 }
 
-# Tables (and the columns in them) that figures.py reads, per axis. A run may save
+# Tables (and the columns in them) that moe.figures reads, per axis. A run may save
 # more tables and more columns; these are the minimum every device must provide.
 REQUIRED = {
     "axis-1-cache-capacity": {

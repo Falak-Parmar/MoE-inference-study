@@ -5,7 +5,7 @@
 
 ## Notebook
 
-`Mac.ipynb`: Mac / MLX, built on the shared `experiments/moe_cache.py` (true K-slot disk-backed cache, see `experiments/README.md`).
+`Mac.ipynb`: Mac / MLX, built on the shared `moe` package (`src/moe/mlx_cache.py`, the true K-slot disk-backed cache; see `experiments/README.md`).
 
 ### Method
 
@@ -16,4 +16,4 @@
 ### Running
 
 Run All (full configuration: ~25-35 min on an M4 / 16 GB). `MOE_SMOKE=1` runs a tiny configuration in a few minutes.
-Results: `results/mac.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python experiments/figures.py`.
+Results: `results/mac.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python -m moe.figures`.

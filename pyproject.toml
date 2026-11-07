@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moe-inference-study"
+version = "0.1.0"
+description = "Shared code for the DS635 MoE inference study: expert caching for OLMoE on Mac and Windows"
+requires-python = ">=3.11"
+dependencies = ["numpy", "pandas", "matplotlib", "psutil", "safetensors"]
+
+[project.optional-dependencies]
+mac = ["mlx", "mlx-lm"]
+windows = ["torch", "transformers", "accelerate"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

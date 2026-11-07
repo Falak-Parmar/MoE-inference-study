@@ -1,11 +1,11 @@
 """Cross-device figures: every graph puts all devices that have results side by side.
 
-Reads ``experiments/<axis>/results/<device>.json`` (see results.py) and draws the
+Reads ``experiments/<axis>/results/<device>.json`` (see moe.results) and draws the
 figures listed in experiments/README.md. Colour always means device; the second
 variable (K, policy, strategy, mode) is a line style or its own panel.
 
-    python experiments/figures.py                 # every axis -> <axis>/figures/*.png
-    python experiments/figures.py axis-1-cache-capacity
+    python -m moe.figures                          # every axis -> experiments/<axis>/figures/*.png
+    python -m moe.figures axis-1-cache-capacity
 
 In a notebook: ``figures.make(AXIS, RESULTS)`` shows them without saving.
 Only pandas, numpy and matplotlib are needed (no MLX / PyTorch).
@@ -23,10 +23,11 @@ if __name__ == "__main__":
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).parent))
-import results as rs  # noqa: E402
+from moe import results as rs  # noqa: E402
+from moe.common import knee_point  # noqa: E402
 
-EXPERIMENTS = Path(__file__).parent
+# src/moe/figures.py -> repository root -> experiments/
+EXPERIMENTS = Path(__file__).resolve().parents[2] / "experiments"
 
 # Device colours (first three categorical slots: distinguishable for colour-blind readers).
 COLORS = {"mac": "#2a78d6", "windows-igpu": "#eb6834", "windows-dgpu": "#1baf7a"}
@@ -77,14 +78,9 @@ def _grouped_bars(ax, df, x, y, order=None):
 
 
 def _knee(x, y):
-    """Kneedle knee on a log2 x axis (same rule as moe_cache.knee_point)."""
+    """Kneedle knee on a log2 x axis (moe.common.knee_point); None for < 3 points."""
     x, y = np.asarray(x, float), np.asarray(y, float)
-    if len(x) < 3:
-        return None
-    xs = np.log2(x)
-    xn = (xs - xs[0]) / (xs[-1] - xs[0])
-    yn = (y - y[0]) / ((y[-1] - y[0]) or 1.0)
-    return x[int(np.argmax(yn - xn))]
+    return knee_point(x, y)[0] if len(x) >= 3 else None
 
 
 def _devices_note(docs):
