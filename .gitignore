@@ -18,6 +18,7 @@ venv/
 
 # Generated experiment artifacts
 experiments/axis-2-eviction-policies/traces/
+experiments/.cache/
 
 # macOS
 .DS_Store
