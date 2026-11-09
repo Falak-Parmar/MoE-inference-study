@@ -1,6 +1,10 @@
-"""Windows / PyTorch backend: the true K-slot expert cache used by every ``Windows_DGPU.ipynb``.
+"""Windows / PyTorch backend: the true K-slot expert cache used by every ``Windows_DGPU.ipynb``
+and ``Windows_IGPU.ipynb``.
 
-Windows with a CUDA GPU only: the reader uses the Win32 API and the cache lives in VRAM.
+Windows only: the reader uses the Win32 API. The bank lives in the GPU's memory:
+VRAM on the dedicated NVIDIA GPU (``cuda``), shared GPU memory on the Intel integrated
+GPU (``xpu``). Pass the device explicitly (``default_device("xpu")`` on the iGPU); helpers
+that take ``device=None`` mean CUDA.
 
 It mirrors ``moe.mlx_cache`` (same names, same arguments), so a Windows notebook is the
 Mac notebook with ``mc`` replaced by ``tc``. The four concerns stay separate:
@@ -8,25 +12,26 @@ Mac notebook with ``mc`` replaced by ``tc``. The four concerns stay separate:
     storage    ExpertIndex, ExpertReader   byte ranges of each expert inside the
                                            original safetensors shards; reads go
                                            straight from disk (OS file cache bypassed)
-    residency  ExpertCache + policies      a global bank of K slots in VRAM over the
-                                           1,024 logical (layer, expert_id) experts;
-               HostTier                    optional bounded RAM tier (pinned memory)
+    residency  ExpertCache + policies      a global bank of K slots in GPU memory over
+                                           the 1,024 logical (layer, expert_id) experts;
+               HostTier                    optional bounded RAM tier (pinned on CUDA)
     routing    CachedMoE                   the model's own router (same math as
                                            transformers' OlmoeSparseMoeBlock)
     compute    CachedMoE.expert_out        transformers' eager per-expert loop over the
-                                           VRAM bank, indexed by slot
+                                           GPU bank, indexed by slot
 
 Everything framework-free (policies, replay, recorder, workloads, analysis) lives in
 ``moe.common`` and is re-exported here, so ``tc.make_policy``, ``tc.replay`` etc. work.
 
 Design notes
 ------------
-* K is GLOBAL and counts experts in the fastest tier (VRAM on the dGPU). The bank is
+* K is GLOBAL and counts experts in the fastest tier (VRAM on the dGPU, shared GPU
+  memory on the iGPU). The bank is
   two preallocated tensors, ``GU`` (K, 2I, H) = [gate; up] and ``D`` (K, H, I), so the
   resident expert memory is exactly K x 12.6 MB (BF16) and nothing else. The full bank
-  is never loaded, neither in VRAM nor in RAM.
+  is never loaded, neither in GPU memory nor in RAM.
 * Data path of a miss: disk -> pinned staging buffer (one per reader thread) -> async
-  copy on that thread's CUDA stream into the slot. Reads are unbuffered
+  copy on that thread's stream (CUDA or XPU) into the slot. Reads are unbuffered
   (``FILE_FLAG_NO_BUFFERING``), so the Windows file cache never quietly holds the bank. Read and copy times are recorded
   separately (``disk_s`` and ``h2d_s``).
 * Slot reuse is safe without extra events: a layer only loads after its routing has
@@ -63,6 +68,7 @@ from .common import _Policy
 
 MODEL_NAME = "OLMoE-1B-7B-0125-Instruct"
 ALIGN = 4096            # sector alignment for unbuffered reads (covers 512e and 4Kn drives)
+XPU_MAX_ALLOC = 4 * 2**30   # Intel GPUs refuse one allocation of 4 GiB or more by default
 
 
 def default_model_dir() -> Path:
@@ -73,18 +79,45 @@ def default_model_dir() -> Path:
 # Device helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def default_device() -> torch.device:
-    """The dedicated GPU. Fails clearly anywhere but Windows with CUDA."""
+def default_device(kind: str = "cuda") -> torch.device:
+    """This machine's GPU: ``"cuda"`` (dedicated NVIDIA GPU, Windows_DGPU notebooks) or
+    ``"xpu"`` (Intel integrated GPU, Windows_IGPU notebooks). Fails clearly anywhere else."""
     if sys.platform != "win32":
-        raise RuntimeError("moe.torch_cache runs only on the Windows machines (Windows_DGPU.ipynb).")
-    if not torch.cuda.is_available():
-        raise RuntimeError("No CUDA device: install a CUDA build of PyTorch and check the GPU driver.")
-    return torch.device("cuda")
+        raise RuntimeError("moe.torch_cache runs only on the Windows machines "
+                           "(Windows_DGPU.ipynb / Windows_IGPU.ipynb).")
+    if kind == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("No CUDA device: install a CUDA build of PyTorch and check the GPU driver.")
+    elif kind == "xpu":
+        if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
+            raise RuntimeError("No Intel XPU device: install the XPU build of PyTorch "
+                               "(pip install torch --index-url https://download.pytorch.org/whl/xpu) "
+                               "and update the Intel graphics driver.")
+    else:
+        raise ValueError(f"unknown device kind {kind!r} (use 'cuda' or 'xpu')")
+    return torch.device(kind)
+
+
+def _acc(device=None):
+    """The torch backend module that runs ``device``: ``torch.cuda`` or ``torch.xpu``
+    (``torch.cuda`` when ``device`` is None)."""
+    return getattr(torch, torch.device(device).type if device is not None else "cuda")
 
 
 def synchronize(device=None):
     """Wait for every queued kernel (call before reading a timer)."""
-    torch.cuda.synchronize(device)
+    _acc(device).synchronize(device)
+
+
+def _mem_get_info(device) -> tuple[int, int]:
+    """(free, total) bytes of GPU memory. Some Intel drivers cannot report free memory;
+    then free = total - what PyTorch already holds."""
+    acc = _acc(device)
+    try:
+        return acc.mem_get_info(device)
+    except (RuntimeError, AttributeError):
+        total = acc.get_device_properties(device).total_memory
+        return total - acc.memory_reserved(device), total
 
 
 def model_device(model) -> torch.device:
@@ -110,14 +143,21 @@ class HostBuffer:
     """A CPU byte buffer whose start is ALIGN-aligned; pinned (page-locked) when
     ``pin`` so that copies to the GPU are truly asynchronous."""
 
-    def __init__(self, nbytes: int, pin: bool = False, register: bool = False):
+    def __init__(self, nbytes: int, pin: bool = False, register: bool = False, device=None):
         """``register=True`` pins an ordinary allocation with ``cudaHostRegister`` (exact
         size; for large blocks), instead of PyTorch's pinned allocator, which rounds every
-        allocation up to a power of two."""
+        allocation up to a power of two. ``cudaHostRegister`` exists only on CUDA: for any
+        other ``device`` a ``register`` block stays pageable (``registered`` is False).
+        ``device`` None means CUDA."""
         self.nbytes = int(nbytes)
         self.registered = False
-        raw = torch.empty(self.nbytes + ALIGN, dtype=torch.uint8, pin_memory=pin and not register)
-        if pin and register:
+        cuda = device is None or torch.device(device).type == "cuda"
+        try:
+            raw = torch.empty(self.nbytes + ALIGN, dtype=torch.uint8, pin_memory=pin and not register)
+        except RuntimeError as e:
+            print(f"[HostBuffer] pinned allocation failed ({e}); this buffer stays pageable")
+            raw = torch.empty(self.nbytes + ALIGN, dtype=torch.uint8)
+        if pin and register and cuda:
             try:
                 torch.cuda.check_error(torch.cuda.cudart().cudaHostRegister(raw.data_ptr(), raw.numel(), 0))
                 self.registered = True
@@ -304,18 +344,35 @@ def _view(buf: HostBuffer, entry, shape, dtype):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Residency: the global K-slot bank in VRAM, plus an optional RAM tier
+# Residency: the global K-slot bank in GPU memory, plus an optional RAM tier
 # ─────────────────────────────────────────────────────────────────────────────
 
 def max_safe_capacity(index: ExpertIndex, device=None, fraction: float = 0.95,
-                      reserve_gb: float = 0.6) -> int:
-    """Largest K whose bank fits in VRAM right now: the smaller of ``fraction`` of VRAM
-    and the VRAM free now, minus a reserve for KV cache and activations (call after
-    ``load_model``, before any bank exists)."""
+                      reserve_gb: float = 0.6, ram_reserve_gb: float = 3.0,
+                      shared_fraction: float = 0.5) -> int:
+    """Largest K whose bank fits in GPU memory right now: the smaller of ``fraction`` of
+    the GPU's memory and the memory free now, minus a reserve for KV cache and activations
+    (call after ``load_model``, before any bank exists).
+
+    An integrated GPU (``xpu``) has no memory of its own: every byte it uses is system RAM.
+    There the bank must also fit (a) in the RAM free now, keeping ``ram_reserve_gb`` for
+    Windows, Python and the staging buffers, and (b) in Windows' shared GPU memory, which
+    is ``shared_fraction`` (half) of physical RAM, less what PyTorch already holds on the
+    GPU. K is also kept below 512 there, because the GU bank of 512 experts is exactly 4 GiB
+    and Intel GPUs refuse single allocations of that size by default."""
     d = torch.device(device) if device is not None else default_device()
-    free, total = torch.cuda.mem_get_info(d)
+    free, total = _mem_get_info(d)
     budget = min(total * fraction, free) - reserve_gb * 1e9
-    return int(max(0, min(index.total_experts, budget // index.expert_bytes)))
+    k_max = index.total_experts
+    if d.type == "xpu":
+        import psutil
+        vm = psutil.virtual_memory()
+        shared = vm.total * shared_fraction - torch.xpu.memory_reserved(d)
+        budget = min(budget, vm.available - ram_reserve_gb * 1e9 - reserve_gb * 1e9,
+                     shared - reserve_gb * 1e9)
+        gu_bytes = 2 * index.intermediate * index.hidden * torch.tensor([], dtype=index.dtype).element_size()
+        k_max = min(k_max, (XPU_MAX_ALLOC - 1) // gu_bytes)
+    return int(max(0, min(k_max, budget // index.expert_bytes)))
 
 
 def max_host_capacity(index: ExpertIndex, fraction: float = 0.5, reserve_gb: float = 4.0) -> int:
@@ -327,13 +384,14 @@ def max_host_capacity(index: ExpertIndex, fraction: float = 0.5, reserve_gb: flo
 
 
 class HostTier:
-    """A bounded RAM tier between VRAM and disk: ``capacity`` experts in pinned host
-    buffers, managed by its own policy (LRU). A VRAM miss that hits here costs only a
-    host-to-device copy; a miss here reads from disk into the tier first. It never
-    holds the full bank (capacity < 1,024)."""
+    """A bounded RAM tier between GPU memory and disk: ``capacity`` experts in host
+    buffers (pinned on CUDA), managed by its own policy (LRU). A GPU miss that hits here
+    costs only a host-to-device copy; a miss here reads from disk into the tier first. It
+    never holds the full bank (capacity < 1,024). On the iGPU (``device`` = xpu) the block
+    stays pageable: PyTorch's pinned allocator would round it up to a power of two."""
 
     def __init__(self, index: ExpertIndex, capacity: int, policy: str = "LRU",
-                 reader: ExpertReader | None = None, pin: bool = True):
+                 reader: ExpertReader | None = None, pin: bool = True, device=None):
         self.index = index
         self.capacity = int(capacity)
         if not 1 <= self.capacity < index.total_experts:
@@ -342,7 +400,7 @@ class HostTier:
         self.policy = make_policy(policy, self.capacity)
         nbytes = (reader or ExpertReader(index)).buf_bytes          # a multiple of ALIGN
         t = time.perf_counter()
-        self.block = HostBuffer(nbytes * self.capacity, pin, register=True)   # one exact-size pinned block
+        self.block = HostBuffer(nbytes * self.capacity, pin, register=True, device=device)   # one exact-size block
         self.bufs = [self.block.slice(i * nbytes, nbytes) for i in range(self.capacity)]
         self.alloc_s = time.perf_counter() - t
         self.pinned = self.block.registered
@@ -384,11 +442,12 @@ class HostTier:
 
 
 class ExpertCache:
-    """Global cache of at most ``capacity`` logical experts in VRAM.
+    """Global cache of at most ``capacity`` logical experts in GPU memory (VRAM on the
+    dGPU, shared GPU memory on the iGPU).
 
     The bank is two preallocated tensors ``GU`` (K, 2I, H) and ``D`` (K, H, I).
     ``slot_of[(layer, eid)]`` says where a resident expert lives. With ``host_tier``
-    a VRAM miss is served from the RAM tier when it can be, else from disk.
+    a GPU miss is served from the RAM tier when it can be, else from disk.
     """
 
     def __init__(self, index: ExpertIndex, capacity: int, policy: str | _Policy = "LRU",
@@ -422,7 +481,7 @@ class ExpertCache:
     def reset_stats(self):
         self.hits = self.misses = self.evictions = 0
         self.bytes_loaded = 0
-        self.io_ms = 0.0          # wall time spent loading misses (disk read + copy to VRAM)
+        self.io_ms = 0.0          # wall time spent loading misses (disk read + copy to the GPU)
         self.load_ms: list[float] = []
         self._detail: list[tuple] = []     # per load: (disk bytes, disk ms, h2d ms)
         self.sync_ms = 0.0
@@ -495,7 +554,8 @@ class ExpertCache:
     def _stage(self):
         st = getattr(self._tls, "st", None)
         if st is None:
-            st = (HostBuffer(self.reader.buf_bytes, pin=True), torch.cuda.Stream(self.device))
+            st = (HostBuffer(self.reader.buf_bytes, pin=True, device=self.device),
+                  _acc(self.device).Stream(self.device))
             self._tls.st = st
             self._stages.append(st)
         return st
@@ -505,13 +565,13 @@ class ExpertCache:
         loc = self.index.loc
         src = [_view(buf, layout[p], loc[(key[0], key[1], p)].shape, self.index.dtype) for p in PROJECTIONS]
         dst = [self.GU[slot, :I], self.GU[slot, I:], self.D[slot]]
-        with torch.cuda.stream(stream):
+        with _acc(self.device).stream(stream):
             for d, s in zip(dst, src):
                 d.copy_(s, non_blocking=True)
         stream.synchronize()          # the slot is ready and the staging buffer is free again
 
     def _load_one(self, key, slot):
-        """Disk (or RAM tier) -> VRAM slot. Returns (bytes, ms). Thread-safe."""
+        """Disk (or RAM tier) -> GPU slot. Returns (bytes, ms). Thread-safe."""
         t0 = time.perf_counter()
         stage, stream = self._stage()
         disk = 0
@@ -605,8 +665,8 @@ def start_pool(cache: ExpertCache, threads: int) -> ThreadPoolExecutor:
 
 
 def replay_two_tier(events, policy: _Policy, host_capacity: int, host_policy: str = "LRU"):
-    """Exact replay of a VRAM policy plus a RAM tier, with the real cache's grouping
-    and pinning rules. Returns (VRAM hit per access, RAM hit per VRAM miss)."""
+    """Exact replay of a GPU-tier policy plus a RAM tier, with the real cache's grouping
+    and pinning rules. Returns (GPU hit per access, RAM hit per GPU miss)."""
     host = make_policy(host_policy, host_capacity)
     K = policy.capacity
     vram, ram = [], []
@@ -964,22 +1024,24 @@ def run_workload(model, tokenizer, cache: ExpertCache, prompts, max_new_tokens: 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def reset_peak_memory(device=None):
-    torch.cuda.reset_peak_memory_stats(device)
+    _acc(device).reset_peak_memory_stats(device)
 
 
 def peak_memory_gb(device=None) -> float:
     """Peak memory the GPU allocator handed out since ``reset_peak_memory``."""
-    return torch.cuda.max_memory_allocated(device) / 1e9
+    return _acc(device).max_memory_allocated(device) / 1e9
 
 
 def memory_snapshot(device=None) -> dict:
     import psutil
-    free, total = torch.cuda.mem_get_info(device)
+    acc = _acc(device)
+    free, total = _mem_get_info(device)
     return {"process_rss_GB": psutil.Process().memory_info().rss / 1e9,
-            "gpu_allocated_GB": torch.cuda.memory_allocated(device) / 1e9,
-            "gpu_peak_GB": torch.cuda.max_memory_allocated(device) / 1e9,
-            "gpu_reserved_GB": torch.cuda.memory_reserved(device) / 1e9,
-            "gpu_free_GB": free / 1e9}
+            "gpu_allocated_GB": acc.memory_allocated(device) / 1e9,
+            "gpu_peak_GB": acc.max_memory_allocated(device) / 1e9,
+            "gpu_reserved_GB": acc.memory_reserved(device) / 1e9,
+            "gpu_free_GB": free / 1e9,
+            "ram_available_GB": psutil.virtual_memory().available / 1e9}
 
 
 def system_info(device=None) -> dict:
@@ -993,14 +1055,24 @@ def system_info(device=None) -> dict:
         "transformers": transformers.__version__, "device": str(d),
         "expert_reads": "windows-unbuffered",
     }
-    p = torch.cuda.get_device_properties(d)
-    info.update({"gpu": p.name, "vram_GB": round(p.total_memory / 1e9, 2), "cuda": torch.version.cuda})
+    p = _acc(d).get_device_properties(d)
+    if d.type == "cuda":
+        info.update({"gpu": p.name, "vram_GB": round(p.total_memory / 1e9, 2), "cuda": torch.version.cuda})
+    else:
+        # integrated GPU: its memory is shared system RAM (no VRAM of its own)
+        info.update({"gpu": p.name, "gpu_memory_GB": round(p.total_memory / 1e9, 2),
+                     "gpu_memory": "shared system RAM",
+                     "gpu_driver": getattr(p, "driver_version", None),
+                     "xpu": getattr(torch.version, "xpu", None)})
     return info
 
 
 def free_memory():
     gc.collect()
-    torch.cuda.empty_cache()
+    for kind in ("cuda", "xpu"):
+        acc = getattr(torch, kind, None)
+        if acc is not None and acc.is_available():
+            acc.empty_cache()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
