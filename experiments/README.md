@@ -81,13 +81,14 @@ Every Mac notebook builds on this module. It keeps storage, residency, routing a
 
 ### `moe.torch_cache` (Windows dGPU)
 
-The PyTorch counterpart of `moe.mlx_cache`, with the same names and arguments, so a
+Windows with a CUDA GPU only (it uses the Win32 API for reads and fails clearly elsewhere). The
+PyTorch counterpart of `moe.mlx_cache`, with the same names and arguments, so a
 `Windows_DGPU.ipynb` is its axis's `Mac.ipynb` with `mc` replaced by `tc`. Policies, replay and the
 recorder are the same `moe.common` objects.
 
 * **Storage** — the same `ExpertIndex`. `ExpertReader` reads each projection unbuffered
-  (`FILE_FLAG_NO_BUFFERING` through `CreateFileW` / `ReadFile` on Windows, `O_DIRECT` on Linux,
-  `F_NOCACHE` on macOS), so the OS file cache never holds expert bytes and no purge is needed. Byte
+  (`FILE_FLAG_NO_BUFFERING` through `CreateFileW` / `ReadFile`), so the Windows file cache never
+  holds expert bytes and no purge is needed. Byte
   ranges are widened to 4 KiB for unbuffered I/O. If the unbuffered open fails, it falls back to
   buffered reads and reports `mode = 'buffered'`.
 * **Residency** — `ExpertCache` is a bank of **K global slots in VRAM** (`GU` = [gate; up] and `D`).
@@ -104,8 +105,8 @@ recorder are the same `moe.common` objects.
   attention mask), every step synchronised; `max_safe_capacity` reads the free VRAM once at load;
   `system_info` records the GPU, VRAM, CUDA, torch and transformers versions and the read mode.
 
-Each axis has its own prompts (per-axis workloads) in `prompts.json`. The only download is the
-Windows checkpoint, which `tc.download_model()` fetches once if it is missing.
+Each axis has its own prompts (per-axis workloads) in `prompts.json`; nothing is downloaded by the
+notebooks.
 
 ## Running
 
@@ -127,9 +128,9 @@ Smoke results go to `experiments/.cache/smoke/` (git-ignored).
 
 1. Python environment with a CUDA build of PyTorch, then `pip install -e ".[windows]"` from the
    repository root (adds transformers, safetensors, pandas, matplotlib, psutil).
-2. The first notebook run downloads `allenai/OLMoE-1B-7B-0125-Instruct` (BF16, ~14 GB) into
-   `models/OLMoE-1B-7B-0125-Instruct/` (git-ignored). The same checkpoint as the Mac, so routing is
-   comparable.
+2. Download `allenai/OLMoE-1B-7B-0125-Instruct` (BF16, ~14 GB) into
+   `models/OLMoE-1B-7B-0125-Instruct/` (git-ignored) beforehand. It is the same checkpoint as the
+   Mac's, so routing is comparable. The notebooks stop with a clear message if it is missing.
 3. Close other GPU programs (each notebook reads the free VRAM once at load and times only the K
    values whose bank fits), open `Windows_DGPU.ipynb` and **Run All**. It writes
    `results/windows-dgpu.json`.
@@ -139,9 +140,6 @@ Quick check (`MOE_SMOKE=1`, from a Command Prompt; in PowerShell use `$env:MOE_S
 ```bash
 set "MOE_SMOKE=1" && jupyter nbconvert --to notebook --execute --output-dir experiments/.cache/smoke experiments/axis-1-cache-capacity/Windows_DGPU.ipynb
 ```
-
-The dGPU notebooks need CUDA for a full run; with `MOE_SMOKE=1` they also run on a Mac (MPS) or
-CPU, which is how they were tested before the first Windows run.
 
 **Cold disk.** `F_NOCACHE` stops these reads from filling the page cache, but data already cached is
 still served from RAM. Notebooks try `sudo -n purge`; if that needs a password, run `sudo purge`

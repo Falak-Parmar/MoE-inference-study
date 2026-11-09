@@ -1,5 +1,7 @@
 """Windows / PyTorch backend: the true K-slot expert cache used by every ``Windows_DGPU.ipynb``.
 
+Windows with a CUDA GPU only: the reader uses the Win32 API and the cache lives in VRAM.
+
 It mirrors ``moe.mlx_cache`` (same names, same arguments), so a Windows notebook is the
 Mac notebook with ``mc`` replaced by ``tc``. The four concerns stay separate:
 
@@ -25,8 +27,7 @@ Design notes
   is never loaded, neither in VRAM nor in RAM.
 * Data path of a miss: disk -> pinned staging buffer (one per reader thread) -> async
   copy on that thread's CUDA stream into the slot. Reads are unbuffered
-  (``FILE_FLAG_NO_BUFFERING`` on Windows, ``O_DIRECT`` on Linux, ``F_NOCACHE`` on macOS),
-  so the OS file cache never quietly holds the bank. Read and copy times are recorded
+  (``FILE_FLAG_NO_BUFFERING``), so the Windows file cache never quietly holds the bank. Read and copy times are recorded
   separately (``disk_s`` and ``h2d_s``).
 * Slot reuse is safe without extra events: a layer only loads after its routing has
   been copied to the CPU, which waits for every kernel queued before it on the compute
@@ -44,7 +45,6 @@ from __future__ import annotations
 
 import copy
 import gc
-import os
 import platform
 import sys
 import threading
@@ -62,7 +62,6 @@ from .common import *  # noqa: F401,F403  (re-export the framework-free core)
 from .common import _Policy
 
 MODEL_NAME = "OLMoE-1B-7B-0125-Instruct"
-HF_REPO = "allenai/OLMoE-1B-7B-0125-Instruct"
 ALIGN = 4096            # sector alignment for unbuffered reads (covers 512e and 4Kn drives)
 
 
@@ -70,41 +69,22 @@ def default_model_dir() -> Path:
     return repo_root() / "models" / MODEL_NAME
 
 
-def download_model(model_dir: Path | str | None = None) -> Path:
-    """Fetch the BF16 checkpoint from Hugging Face if it is not already there.
-    README.md is not downloaded (the repository keeps its own)."""
-    model_dir = Path(model_dir or default_model_dir())
-    have = (model_dir / "config.json").exists() and (model_dir / "tokenizer.json").exists() \
-        and list(model_dir.glob("model*.safetensors"))
-    if not have:
-        from huggingface_hub import snapshot_download
-        snapshot_download(HF_REPO, local_dir=model_dir, allow_patterns=["*.json", "*.safetensors"])
-    return model_dir
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Device helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def default_device() -> torch.device:
-    """CUDA if present (the dGPU), else MPS / CPU (only for smoke tests elsewhere).
-    The environment variable ``MOE_DEVICE`` (e.g. ``cpu``) overrides the choice."""
-    if os.environ.get("MOE_DEVICE"):
-        return torch.device(os.environ["MOE_DEVICE"])
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+    """The dedicated GPU. Fails clearly anywhere but Windows with CUDA."""
+    if sys.platform != "win32":
+        raise RuntimeError("moe.torch_cache runs only on the Windows machines (Windows_DGPU.ipynb).")
+    if not torch.cuda.is_available():
+        raise RuntimeError("No CUDA device: install a CUDA build of PyTorch and check the GPU driver.")
+    return torch.device("cuda")
 
 
 def synchronize(device=None):
     """Wait for every queued kernel (call before reading a timer)."""
-    d = torch.device(device) if device is not None else default_device()
-    if d.type == "cuda":
-        torch.cuda.synchronize(d)
-    elif d.type == "mps":
-        torch.mps.synchronize()
+    torch.cuda.synchronize(device)
 
 
 def model_device(model) -> torch.device:
@@ -193,11 +173,8 @@ if sys.platform == "win32":
 class ExpertReader:
     """Reads the three projections of one expert into a ``HostBuffer``.
 
-    ``direct=True`` bypasses the OS file cache:
-      * Windows: ``CreateFileW(FILE_FLAG_NO_BUFFERING)`` + ``ReadFile`` at an offset
-      * Linux:   ``O_DIRECT`` + ``preadv``
-      * macOS:   ``F_NOCACHE`` + ``preadv`` (used only to smoke-test the code on a Mac)
-    Unbuffered reads need sector-aligned offsets, lengths and buffers, so each tensor's
+    ``direct=True`` bypasses the Windows file cache: ``CreateFileW(FILE_FLAG_NO_BUFFERING)``
+    + ``ReadFile`` at an offset. Unbuffered reads need sector-aligned offsets, lengths and buffers, so each tensor's
     byte range is widened to ALIGN and read into an aligned region of the buffer; the
     tensor then starts a few bytes into that region. If the unbuffered open fails the
     reader falls back to ordinary buffered reads and says so in ``mode``.
@@ -205,9 +182,11 @@ class ExpertReader:
     """
 
     def __init__(self, index: ExpertIndex, direct: bool = True):
+        if sys.platform != "win32":
+            raise RuntimeError("ExpertReader uses the Win32 API: run the Windows notebooks on Windows.")
         self.index = index
         self.direct = bool(direct)
-        self.mode = self._default_mode() if self.direct else "buffered"
+        self.mode = "windows-unbuffered" if self.direct else "buffered"
         self.align = ALIGN if self.mode != "buffered" else 1
         # fixed buffer layout: region i holds projection i (widened to ALIGN)
         self._bounds = []
@@ -219,16 +198,6 @@ class ExpertReader:
         self._handles = []
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _default_mode() -> str:
-        if sys.platform == "win32":
-            return "windows-unbuffered"
-        if sys.platform.startswith("linux"):
-            return "linux-o_direct"
-        if sys.platform == "darwin":
-            return "macos-nocache"
-        return "buffered"
-
     # -- file handles (one per thread and file) ------------------------------
     def _open(self, path: str):
         if self.mode == "windows-unbuffered":
@@ -237,15 +206,6 @@ class ExpertReader:
             if h is None or h == _INVALID_HANDLE:
                 raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
             return ("win", h)
-        if self.mode == "linux-o_direct":
-            return ("fd", os.open(path, os.O_RDONLY | os.O_DIRECT))
-        if self.mode == "macos-nocache":
-            import fcntl
-            fd = os.open(path, os.O_RDONLY)
-            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
-            return ("fd", fd)
-        if hasattr(os, "preadv"):
-            return ("fd", os.open(path, os.O_RDONLY))
         return ("file", open(path, "rb", buffering=0))
 
     def _handle(self, path: str):
@@ -286,8 +246,6 @@ class ExpertReader:
                         break
                     raise OSError(err, f"ReadFile failed at offset {off} of {path}")
                 k = n.value
-            elif kind == "fd":
-                k = os.preadv(h, [memoryview(buf[pos + got:pos + length])], start + got)
             else:
                 h.seek(start + got)
                 k = h.readinto(memoryview(buf[pos + got:pos + length]))
@@ -326,8 +284,6 @@ class ExpertReader:
                 try:
                     if kind == "win":
                         _k32.CloseHandle(h)
-                    elif kind == "fd":
-                        os.close(h)
                     else:
                         h.close()
                 except Exception:
@@ -344,19 +300,7 @@ class ExpertReader:
 
 def _view(buf: HostBuffer, entry, shape, dtype):
     pos, n = entry
-    t = buf.t[pos:pos + n]
-    if t.storage_offset() % torch.empty((), dtype=dtype).element_size():
-        t = t.clone()     # tensor starts at an odd byte (unpadded safetensors header); HF files are aligned
-    return t.view(dtype).view(shape)
-
-
-_NON_CUDA_COPY_LOCK = threading.Lock()
-
-
-def purge_page_cache() -> bool:
-    """Nothing to purge: every expert read is unbuffered (see ``ExpertReader``), so the
-    OS file cache never holds expert bytes. Returns False to say no purge ran."""
-    return False
+    return buf.t[pos:pos + n].view(dtype).view(shape)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,18 +309,12 @@ def purge_page_cache() -> bool:
 
 def max_safe_capacity(index: ExpertIndex, device=None, fraction: float = 0.95,
                       reserve_gb: float = 0.6) -> int:
-    """Largest K whose bank fits in the fast tier right now. On CUDA: the smaller of
-    ``fraction`` of VRAM and the VRAM free now, minus a reserve for KV cache and
-    activations (call after ``load_model``, before any bank exists). Elsewhere: RAM,
-    as on the Mac."""
+    """Largest K whose bank fits in VRAM right now: the smaller of ``fraction`` of VRAM
+    and the VRAM free now, minus a reserve for KV cache and activations (call after
+    ``load_model``, before any bank exists)."""
     d = torch.device(device) if device is not None else default_device()
-    if d.type == "cuda":
-        free, total = torch.cuda.mem_get_info(d)
-        budget = min(total * fraction, free) - reserve_gb * 1e9
-    else:
-        import psutil
-        vm = psutil.virtual_memory()
-        budget = min(vm.total * 0.70, vm.available) - 1.5e9
+    free, total = torch.cuda.mem_get_info(d)
+    budget = min(total * fraction, free) - reserve_gb * 1e9
     return int(max(0, min(index.total_experts, budget // index.expert_bytes)))
 
 
@@ -395,14 +333,13 @@ class HostTier:
     holds the full bank (capacity < 1,024)."""
 
     def __init__(self, index: ExpertIndex, capacity: int, policy: str = "LRU",
-                 reader: ExpertReader | None = None, pin: bool | None = None):
+                 reader: ExpertReader | None = None, pin: bool = True):
         self.index = index
         self.capacity = int(capacity)
         if not 1 <= self.capacity < index.total_experts:
             raise ValueError(f"RAM tier capacity must be in [1, {index.total_experts - 1}]")
         self.policy_name = policy
         self.policy = make_policy(policy, self.capacity)
-        pin = torch.cuda.is_available() if pin is None else pin
         nbytes = (reader or ExpertReader(index)).buf_bytes          # a multiple of ALIGN
         t = time.perf_counter()
         self.block = HostBuffer(nbytes * self.capacity, pin, register=True)   # one exact-size pinned block
@@ -558,9 +495,7 @@ class ExpertCache:
     def _stage(self):
         st = getattr(self._tls, "st", None)
         if st is None:
-            cuda = self.device.type == "cuda"
-            st = (HostBuffer(self.reader.buf_bytes, pin=cuda),
-                  torch.cuda.Stream(self.device) if cuda else None)
+            st = (HostBuffer(self.reader.buf_bytes, pin=True), torch.cuda.Stream(self.device))
             self._tls.st = st
             self._stages.append(st)
         return st
@@ -570,18 +505,10 @@ class ExpertCache:
         loc = self.index.loc
         src = [_view(buf, layout[p], loc[(key[0], key[1], p)].shape, self.index.dtype) for p in PROJECTIONS]
         dst = [self.GU[slot, :I], self.GU[slot, I:], self.D[slot]]
-        if stream is not None:
-            with torch.cuda.stream(stream):
-                for d, s in zip(dst, src):
-                    d.copy_(s, non_blocking=True)
-            stream.synchronize()          # the slot is ready and the staging buffer is free again
-        else:
-            # MPS / CPU (smoke tests off Windows): Metal aborts if two threads drive the GPU
-            # at once, so these copies are serialised. The CUDA path above stays parallel.
-            with _NON_CUDA_COPY_LOCK:
-                for d, s in zip(dst, src):
-                    d.copy_(s)
-                synchronize(self.device)
+        with torch.cuda.stream(stream):
+            for d, s in zip(dst, src):
+                d.copy_(s, non_blocking=True)
+        stream.synchronize()          # the slot is ready and the staging buffer is free again
 
     def _load_one(self, key, slot):
         """Disk (or RAM tier) -> VRAM slot. Returns (bytes, ms). Thread-safe."""
@@ -1037,33 +964,22 @@ def run_workload(model, tokenizer, cache: ExpertCache, prompts, max_new_tokens: 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def reset_peak_memory(device=None):
-    d = torch.device(device) if device is not None else default_device()
-    if d.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(d)
+    torch.cuda.reset_peak_memory_stats(device)
 
 
 def peak_memory_gb(device=None) -> float:
-    """Peak memory the GPU allocator handed out since ``reset_peak_memory`` (NaN off CUDA)."""
-    d = torch.device(device) if device is not None else default_device()
-    if d.type == "cuda":
-        return torch.cuda.max_memory_allocated(d) / 1e9
-    return float("nan")
+    """Peak memory the GPU allocator handed out since ``reset_peak_memory``."""
+    return torch.cuda.max_memory_allocated(device) / 1e9
 
 
 def memory_snapshot(device=None) -> dict:
     import psutil
-    d = torch.device(device) if device is not None else default_device()
-    out = {"process_rss_GB": psutil.Process().memory_info().rss / 1e9}
-    if d.type == "cuda":
-        free, total = torch.cuda.mem_get_info(d)
-        out.update({"gpu_allocated_GB": torch.cuda.memory_allocated(d) / 1e9,
-                    "gpu_peak_GB": torch.cuda.max_memory_allocated(d) / 1e9,
-                    "gpu_reserved_GB": torch.cuda.memory_reserved(d) / 1e9,
-                    "gpu_free_GB": free / 1e9})
-    else:
-        out.update({"gpu_allocated_GB": float("nan"), "gpu_peak_GB": float("nan"),
-                    "gpu_reserved_GB": float("nan"), "gpu_free_GB": float("nan")})
-    return out
+    free, total = torch.cuda.mem_get_info(device)
+    return {"process_rss_GB": psutil.Process().memory_info().rss / 1e9,
+            "gpu_allocated_GB": torch.cuda.memory_allocated(device) / 1e9,
+            "gpu_peak_GB": torch.cuda.max_memory_allocated(device) / 1e9,
+            "gpu_reserved_GB": torch.cuda.memory_reserved(device) / 1e9,
+            "gpu_free_GB": free / 1e9}
 
 
 def system_info(device=None) -> dict:
@@ -1075,20 +991,16 @@ def system_info(device=None) -> dict:
         "ram_GB": round(psutil.virtual_memory().total / 1e9, 1),
         "python": platform.python_version(), "torch": torch.__version__,
         "transformers": transformers.__version__, "device": str(d),
-        "expert_reads": ExpertReader._default_mode(),
+        "expert_reads": "windows-unbuffered",
     }
-    if d.type == "cuda":
-        p = torch.cuda.get_device_properties(d)
-        info.update({"gpu": p.name, "vram_GB": round(p.total_memory / 1e9, 2), "cuda": torch.version.cuda})
+    p = torch.cuda.get_device_properties(d)
+    info.update({"gpu": p.name, "vram_GB": round(p.total_memory / 1e9, 2), "cuda": torch.version.cuda})
     return info
 
 
 def free_memory():
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        torch.mps.empty_cache()
+    torch.cuda.empty_cache()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
