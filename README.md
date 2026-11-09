@@ -17,6 +17,7 @@ We target three execution environments:
 - `src/moe/` - Shared Python package (`pip install -e ".[mac]"` or `".[windows]"`):
   - `common.py` - Framework-free core: storage index, eviction policies, exact replay, workloads
   - `mlx_cache.py` - Disk-backed K-slot expert cache used by every Mac notebook (MLX)
+  - `torch_cache.py` - The same cache for the Windows notebooks (PyTorch): dedicated GPU (`cuda`, `Windows_DGPU.ipynb`) and Intel integrated GPU (`xpu`, `Windows_IGPU.ipynb`)
   - `results.py` - Results file format shared by all three devices (`<axis>/results/<device>.json`)
   - `figures.py` - Cross-device figures (`<axis>/figures/`), one colour per device
 - `models/` - Model-specific information and documentation

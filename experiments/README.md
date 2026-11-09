@@ -6,8 +6,8 @@ One folder per research axis. Axis 6 (mixed-precision tiering) was cancelled. Ea
 axis-N-name/
   README.md
   Mac.ipynb                 # Apple Silicon, MLX
-  Windows_IGPU.ipynb        # Windows, integrated / shared-memory GPU, PyTorch (to come)
-  Windows_DGPU.ipynb        # Windows, dedicated GPU + VRAM, PyTorch
+  Windows_IGPU.ipynb        # Windows, Intel integrated / shared-memory GPU (xpu), PyTorch
+  Windows_DGPU.ipynb        # Windows, dedicated NVIDIA GPU + VRAM (cuda), PyTorch
   prompts.json              # the axis's workload: the SAME prompts on every device
   results/
     mac.json                # everything one device measured (one file per device)
@@ -36,7 +36,7 @@ also add `src/` to `sys.path` themselves, so they run without installing.
 |---|---|---|
 | `moe.common` | every device | numpy |
 | `moe.mlx_cache` | Mac notebooks | MLX (Mac only) |
-| `moe.torch_cache` | Windows notebooks (`Windows_DGPU.ipynb`) | PyTorch, transformers |
+| `moe.torch_cache` | Windows notebooks (`Windows_DGPU.ipynb`, `Windows_IGPU.ipynb`) | PyTorch (CUDA or XPU build), transformers |
 | `moe.results` | every notebook, all devices | pandas |
 | `moe.figures` | every notebook, and run once for the report | pandas, matplotlib |
 
@@ -79,12 +79,15 @@ Every Mac notebook builds on this module. It keeps storage, residency, routing a
   of every MoE call, and `replay`, which reproduces the real cache's hit / miss / eviction counts
   exactly (asserted in the notebooks).
 
-### `moe.torch_cache` (Windows dGPU)
+### `moe.torch_cache` (Windows dGPU and iGPU)
 
-Windows with a CUDA GPU only (it uses the Win32 API for reads and fails clearly elsewhere). The
-PyTorch counterpart of `moe.mlx_cache`, with the same names and arguments, so a
-`Windows_DGPU.ipynb` is its axis's `Mac.ipynb` with `mc` replaced by `tc`. Policies, replay and the
-recorder are the same `moe.common` objects.
+Windows only (it uses the Win32 API for reads and fails clearly elsewhere), on either GPU:
+`tc.default_device()` is the dedicated NVIDIA GPU (`cuda`, `Windows_DGPU.ipynb`) and
+`tc.default_device('xpu')` the Intel Arc integrated GPU (`xpu`, `Windows_IGPU.ipynb`). The same code
+serves both: the backend module (`torch.cuda` / `torch.xpu`) follows the device. It is the
+PyTorch counterpart of `moe.mlx_cache`, with the same names and arguments, so a Windows notebook is
+its axis's `Mac.ipynb` with `mc` replaced by `tc`. Policies, replay and the recorder are the same
+`moe.common` objects.
 
 * **Storage** — the same `ExpertIndex`. `ExpertReader` reads each projection unbuffered
   (`FILE_FLAG_NO_BUFFERING` through `CreateFileW` / `ReadFile`), so the Windows file cache never
@@ -104,6 +107,14 @@ recorder are the same `moe.common` objects.
 * **Measurement** — greedy single and batched generation (`DynamicCache`, left padding with an
   attention mask), every step synchronised; `max_safe_capacity` reads the free VRAM once at load;
   `system_info` records the GPU, VRAM, CUDA, torch and transformers versions and the read mode.
+* **On the iGPU** (`xpu`) the "GPU memory" is system RAM that Windows lets the integrated GPU use
+  (at most half of RAM; the Arc iGPU has only a 128 MB carve-out of its own). So
+  `max_safe_capacity` also caps the bank by the RAM free at load and by that shared-memory limit,
+  and keeps K below 512, because Intel GPUs refuse single allocations of 4 GiB or more by default
+  (the GU bank of 512 experts is exactly 4 GiB). The copy into a slot is memory-to-memory, not a
+  PCIe transfer, but is still timed as `h2d_s`. `HostTier` stays pageable there (PyTorch's pinned
+  allocator would round a multi-GB block up to a power of two); `system_info` records the GPU name,
+  its reported memory and the driver version instead of VRAM and CUDA.
 
 Each axis has its own prompts (per-axis workloads) in `prompts.json`; nothing is downloaded by the
 notebooks.
@@ -139,6 +150,26 @@ Quick check (`MOE_SMOKE=1`, from a Command Prompt; in PowerShell use `$env:MOE_S
 
 ```bash
 set "MOE_SMOKE=1" && jupyter nbconvert --to notebook --execute --output-dir experiments/.cache/smoke experiments/axis-1-cache-capacity/Windows_DGPU.ipynb
+```
+
+**Windows (iGPU: Intel Arc integrated GPU, e.g. Core Ultra 5 125H, 16 GB).**
+
+1. Update the Intel graphics driver, then a Python environment with the **XPU** build of PyTorch:
+   `pip install torch --index-url https://download.pytorch.org/whl/xpu`, then
+   `pip install -e ".[windows]"` from the repository root (pip keeps the XPU torch). Check with
+   `python -c "import torch; print(torch.xpu.is_available(), torch.xpu.get_device_name(0))"`.
+2. The same checkpoint as the dGPU: `allenai/OLMoE-1B-7B-0125-Instruct` (BF16, ~14 GB) in
+   `models/OLMoE-1B-7B-0125-Instruct/`, downloaded beforehand.
+3. Close other programs, browsers especially: on this machine the expert bank, the RAM tier and
+   every other program share the same 16 GB. Each notebook reads the free shared GPU memory and RAM
+   once at load and times only the K values whose bank fits (about K ≤ 400-500 on 16 GB); larger K
+   come from exact replay. Open `Windows_IGPU.ipynb` and **Run All**. It writes
+   `results/windows-igpu.json`.
+
+Quick check (`MOE_SMOKE=1`, from a Command Prompt; in PowerShell use `$env:MOE_SMOKE=1`):
+
+```bash
+set "MOE_SMOKE=1" && jupyter nbconvert --to notebook --execute --output-dir experiments/.cache/smoke experiments/axis-1-cache-capacity/Windows_IGPU.ipynb
 ```
 
 **Cold disk.** `F_NOCACHE` stops these reads from filling the page cache, but data already cached is
