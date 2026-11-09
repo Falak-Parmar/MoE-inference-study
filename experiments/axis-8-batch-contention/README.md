@@ -7,6 +7,8 @@
 
 `Mac.ipynb`: Mac / MLX, built on the shared `moe` package (`src/moe/mlx_cache.py`, the true K-slot disk-backed cache; see `experiments/README.md`).
 
+`Windows_DGPU.ipynb`: Windows dedicated GPU / PyTorch, the same experiment on `src/moe/torch_cache.py` (K experts in VRAM; misses read unbuffered from disk into pinned RAM, then copied to VRAM). Same prompts and configuration as the Mac; writes `results/windows-dgpu.json`.
+
 ### Method
 
 * **Real batched decoding** (no simulation): B = 1, 2, 4, 8, 16 left-padded requests through mlx-lm `BatchKVCache`, at K = 256 and 512.
@@ -16,4 +18,4 @@
 ### Running
 
 Run All (full configuration: ~30-45 min on an M4 / 16 GB). `MOE_SMOKE=1` runs a tiny configuration in a few minutes.
-Results: `results/mac.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python -m moe.figures`.
+Results: `results/mac.json`, `results/windows-dgpu.json` (one file per device; format in `experiments/README.md`). Prompts: `prompts.json` (the same on every device). Figures with every device: `figures/`, made by `python -m moe.figures`.

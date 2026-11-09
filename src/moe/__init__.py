@@ -5,6 +5,7 @@
     moe.results     results file format: experiments/<axis>/results/<device>.json
     moe.figures     cross-device figures (python -m moe.figures)
     moe.mlx_cache   Mac / MLX backend: the true K-slot expert cache (needs mlx, mlx-lm)
+    moe.torch_cache Windows / PyTorch backend: the K-slot cache in VRAM (needs torch, transformers)
 
 Submodules are imported explicitly (``from moe import mlx_cache as mc``) so that
 importing ``moe`` never pulls in MLX or PyTorch on a machine that lacks them.
