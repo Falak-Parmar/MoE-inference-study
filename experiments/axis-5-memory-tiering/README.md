@@ -7,7 +7,7 @@
 
 `Mac.ipynb`: Mac / MLX, built on the shared `moe` package (`src/moe/mlx_cache.py`, the true K-slot disk-backed cache; see `experiments/README.md`).
 
-`Windows_DGPU.ipynb`: Windows dedicated GPU / PyTorch, the same experiment on `src/moe/torch_cache.py` (K experts in VRAM; misses read unbuffered from disk into pinned RAM, then copied to VRAM). Same prompts and configuration as the Mac; writes `results/windows-dgpu.json`. It has three tiers: the VRAM strategies are run with a pinned-RAM tier of `RAM_TIER` experts between VRAM and disk (`runs`) and without it (`runs_two_tier`).
+`Windows_DGPU.ipynb`: Windows dedicated GPU / PyTorch, the same experiment on `src/moe/torch_cache.py` (K experts in VRAM; misses read unbuffered from disk into pinned RAM, then copied to VRAM). Same prompts and configuration as the Mac; writes `results/windows-dgpu.json`. It has three tiers: the VRAM strategies are run with a pinned-RAM tier of `RAM_TIER` experts between VRAM and disk (`runs`) and without it (`runs_two_tier`). The full tier (`RAM_TIER = 512`) needs about 10.4 GB of RAM available: 6.4 GB for the tier plus `RAM_RESERVE_GB = 4` kept free. The notebook prints the RAM available, shrinks the tier to what fits, and stops with a message if no RAM tier fits at all (`REQUIRE_RAM_TIER`), so close other programs before running it.
 
 ### Method
 
